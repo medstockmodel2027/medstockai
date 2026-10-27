@@ -120,3 +120,5 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 - **Phase 2, Step 1 (Backend Foundation - MySQL):** FastAPI service with SQLAlchemy 2.x and PyMySQL connection pooling, CORS allowlist for Vite frontend, Pydantic schemas, password-sanitized error handling, `GET /api/health` for API health, and `GET /api/health/db` for live local MySQL probe diagnostics.
 - **Phase 2, Step 2 (Medicine Master API):** Full CRUD REST API (`/api/medicines`) backed by SQLAlchemy `Medicine` model, Pydantic validation schemas, pagination, multi-field search, duplicate name/brand conflict prevention, and soft-deactivation.
 
+
+# medstockai
