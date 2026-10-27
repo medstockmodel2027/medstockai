@@ -246,15 +246,41 @@ Tables are created safely via `init_db()` using SQLAlchemy's idempotent `Base.me
 
 ---
 
+## 🔒 Reliability & Hardening Protections
+
+### 1. Robust Medicine PATCH Validation
+- **Non-nullable Field Protection:** Explicit `null` values for `medicine_name`, `unit`, `reorder_level`, or `is_active` are rejected with HTTP `422 Unprocessable Entity` before reaching the database.
+- **Partial Update Flexibility:** Fields omitted from the PATCH payload are untouched (partial updates).
+- **Clearing Optional Fields:** Explicit `null` values are permitted for optional fields (`brand_name`, `generic_name`, `category`) allowing users to deliberately clear these fields.
+
+### 2. Database-Level Duplicate Protection
+- Uniqueness is validated at two tiers:
+  1. **Application Query Level:** Case-insensitive check before write.
+  2. **Database Engine Level:** A normalized `canonical_key` column (`String(512)`, indexed and unique) is populated via SQLAlchemy `@event.listens_for(Medicine, "before_insert")` and `"before_update"` hooks using `f"{clean_name}||{clean_brand}"`.
+- **Unbranded Medicine Protection:** In standard SQL and MySQL, standard compound unique constraints on nullable columns (`UNIQUE(medicine_name, brand_name)`) do not prevent duplicates when `brand_name IS NULL` (because `NULL != NULL`). The canonical key pattern enforces strict uniqueness across both MySQL and SQLite for both branded and unbranded medicines, guarding against concurrent duplicate inserts without silently deleting or rewriting records. Duplicate attempts trigger clean `409 Conflict` responses.
+
+### 3. Safe Exception Handling & Credential Masking
+- **Client Safety:** Unhandled exceptions caught by the global error handler return a generic message `{"detail": "Internal server error. Please try again later."}` with status 500. Raw tracebacks, internal database schemas, and credentials are never exposed to clients.
+- **Diagnostic Logging:** The server logs full diagnostic traces with all MySQL passwords and connection strings automatically masked via `sanitize_error()`.
+
+---
+
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite (health + medicine master):
+Run the full pytest suite (health, exception handling, and medicine master):
 ```powershell
-$env:PYTHONPATH="backend"
-.\backend\venv\Scripts\python.exe -m pytest backend/tests -v
+# From project root:
+powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m pytest backend/tests -v"
+
+# Or from backend/ directory with activated venv:
+pytest tests -v
 ```
 
-All **16 automated tests** execute against an isolated in-memory test database, guaranteeing that real pharmacy data is never altered:
+### Test Isolation Architecture
+- **Isolated SQLite In-Memory Database:** All unit and integration tests (`backend/tests/`) run using an isolated in-memory SQLite database (`sqlite:///:memory:`) configured with SQLAlchemy's `StaticPool`. This guarantees tests run deterministically and safely without mutating or requiring access to live database instances.
+- **Live Database Health Probe:** The `GET /api/health/db` endpoint specifically probes the live configured **MySQL database** (`127.0.0.1:3306`). If the local MySQL server is unavailable or credentials are unconfigured, it returns HTTP 200 with `status: "degraded"` and diagnostic details without throwing unhandled exceptions.
+
+All **21 automated tests** pass cleanly:
 1. `test_root_endpoint`: Verifies API welcome metadata, MySQL dialect, and documentation URLs.
 2. `test_api_health_endpoint`: Confirms `GET /api/health` returns status `ok`.
 3. `test_database_health_endpoint`: Validates `GET /api/health/db` probe schema and sanitized diagnostics.
@@ -263,11 +289,17 @@ All **16 automated tests** execute against an isolated in-memory test database, 
 6. `test_cors_rejected_for_disallowed_origin`: Verifies rejection of untrusted origins.
 7. `test_database_error_sanitization`: Verifies regex masking of MySQL passwords in error messages.
 8. `test_masked_database_uri`: Confirms `masked_database_uri` obscures passwords in connection strings.
-9. `test_create_valid_medicine`: Confirms creating a medicine with full attributes.
-10. `test_reject_invalid_or_missing_required_fields`: Tests 422 errors on missing name, whitespace-only name, and negative reorder level.
-11. `test_handle_duplicate_records`: Validates 409 Conflict on exact name + brand duplicates, while allowing different brands of the same generic salt.
-12. `test_list_and_search_medicines`: Validates pagination, multi-field search, and category filtering.
-13. `test_get_medicine_by_id`: Validates retrieval by primary key and 404 on missing record.
-14. `test_update_medicine`: Validates partial updates (PATCH) and conflict rejection.
-15. `test_deactivate_medicine`: Validates soft-deactivation (DELETE) setting `is_active=False` while preserving historical records.
-16. `test_records_persist_across_sessions`: Confirms records persist across separate database sessions.
+9. `test_global_exception_handler_returns_generic_error`: Confirms unhandled exceptions return generic 500 without leaking secrets.
+10. `test_create_valid_medicine`: Confirms creating a medicine with full attributes.
+11. `test_reject_invalid_or_missing_required_fields`: Tests 422 errors on missing name, whitespace-only name, and negative reorder level.
+12. `test_handle_duplicate_records`: Validates 409 Conflict on exact name + brand duplicates, while allowing different brands of the same generic salt.
+13. `test_list_and_search_medicines`: Validates pagination, multi-field search, and category filtering.
+14. `test_get_medicine_by_id`: Validates retrieval by primary key and 404 on missing record.
+15. `test_update_medicine`: Validates partial updates (PATCH) and conflict rejection.
+16. `test_deactivate_medicine`: Validates soft-deactivation (DELETE) setting `is_active=False` while preserving historical records.
+17. `test_records_persist_across_sessions`: Confirms records persist across separate database sessions.
+18. `test_patch_rejects_explicit_null_on_non_nullable_fields`: Verifies PATCH with explicit `null` on `medicine_name`, `unit`, `reorder_level`, and `is_active` returns 422.
+19. `test_patch_allows_null_for_optional_fields_and_preserves_partials`: Verifies PATCH allows setting optional fields to `null` and preserves unaffected fields.
+20. `test_duplicate_protection_unbranded_medicines`: Verifies duplicate rejection for unbranded medicines (`brand_name` is null/empty).
+21. `test_database_level_unique_constraint`: Confirms canonical key unique constraint enforces uniqueness at database layer.
+

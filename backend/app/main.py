@@ -1,4 +1,5 @@
 import logging
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, status
@@ -67,16 +68,22 @@ def create_application() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Global Exception Handler: ensures no sensitive database credentials or raw tracebacks are exposed
+    # Global Exception Handler: returns generic error to client while logging sanitized diagnostics
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         clean_msg = sanitize_error(str(exc))
-        logger.error("Unhandled exception processing %s %s: %s", request.method, request.url.path, clean_msg)
+        clean_traceback = sanitize_error(traceback.format_exc())
+        logger.error(
+            "Unhandled server exception processing %s %s: %s\n%s",
+            request.method,
+            request.url.path,
+            clean_msg,
+            clean_traceback,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "detail": "An internal server error occurred.",
-                "message": clean_msg,
+                "detail": "Internal server error. Please try again later.",
             },
         )
 

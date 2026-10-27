@@ -112,3 +112,29 @@ def test_masked_database_uri():
     assert "mysql+pymysql://" in masked
     if settings.MYSQL_PASSWORD:
         assert f":{settings.MYSQL_PASSWORD}@" not in masked
+
+
+def test_global_exception_handler_returns_generic_error():
+    """
+    Verify that unhandled exceptions caught by global_exception_handler
+    return a safe, generic 500 message to clients without exposing raw tracebacks or secrets.
+    """
+    from fastapi import APIRouter
+
+    test_router = APIRouter()
+
+    @test_router.get("/test-internal-error")
+    def trigger_error():
+        raise RuntimeError("Simulated internal database crash with password=ultra_secret_123")
+
+    app.include_router(test_router)
+
+    # Use raise_server_exceptions=False so Starlette returns the 500 response rather than re-raising
+    safe_client = TestClient(app, raise_server_exceptions=False)
+    response = safe_client.get("/test-internal-error")
+    assert response.status_code == 500
+    data = response.json()
+    assert data["detail"] == "Internal server error. Please try again later."
+    assert "ultra_secret_123" not in str(data)
+    assert "Simulated internal" not in str(data)
+

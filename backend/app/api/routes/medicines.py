@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.medicine import Medicine
@@ -29,6 +30,7 @@ def create_medicine(
     Register a new medicine in the catalog.
     Validates duplicate entries by (medicine_name, brand_name) without conflating
     distinct brands sharing identical generic salts.
+    Provides database-level protection against race conditions.
     """
     clean_name = medicine_in.medicine_name.strip()
     clean_brand = medicine_in.brand_name.strip() if medicine_in.brand_name else None
@@ -54,9 +56,17 @@ def create_medicine(
     medicine_data = medicine_in.model_dump()
     new_medicine = Medicine(**medicine_data)
 
-    db.add(new_medicine)
-    db.commit()
-    db.refresh(new_medicine)
+    try:
+        db.add(new_medicine)
+        db.commit()
+        db.refresh(new_medicine)
+    except IntegrityError:
+        db.rollback()
+        brand_label = f" under brand '{clean_brand}'" if clean_brand else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Medicine '{clean_name}'{brand_label} already exists in catalog.",
+        )
 
     return new_medicine
 
@@ -207,8 +217,16 @@ def update_medicine(
     for field, val in update_dict.items():
         setattr(medicine, field, val)
 
-    db.commit()
-    db.refresh(medicine)
+    try:
+        db.commit()
+        db.refresh(medicine)
+    except IntegrityError:
+        db.rollback()
+        brand_label = f" under brand '{target_brand}'" if target_brand else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Another medicine '{target_name}'{brand_label} already exists in catalog.",
+        )
 
     return medicine
 

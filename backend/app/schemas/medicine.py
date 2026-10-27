@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MedicineBase(BaseModel):
@@ -49,6 +49,8 @@ class MedicineCreate(MedicineBase):
     @field_validator("medicine_name", "unit", mode="before")
     @classmethod
     def validate_non_empty_strings(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Field cannot be null.")
         if isinstance(v, str):
             trimmed = v.strip()
             if not trimmed:
@@ -66,7 +68,12 @@ class MedicineCreate(MedicineBase):
 
 
 class MedicineUpdate(BaseModel):
-    """Schema for updating an existing Medicine Master entry (partial update)."""
+    """
+    Schema for updating an existing Medicine Master entry (partial update).
+    Preserves partial updates when fields are omitted, but strictly rejects explicit
+    null values for non-nullable columns (medicine_name, unit, reorder_level, is_active).
+    Optional fields (brand_name, generic_name, category) continue to allow null.
+    """
     medicine_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     brand_name: Optional[str] = Field(default=None, max_length=255)
     generic_name: Optional[str] = Field(default=None, max_length=255)
@@ -75,10 +82,28 @@ class MedicineUpdate(BaseModel):
     reorder_level: Optional[int] = Field(default=None, ge=0)
     is_active: Optional[bool] = Field(default=None)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_null_for_non_nullable_fields(cls, data):
+        """Reject explicit nulls for database columns that must not be null."""
+        if isinstance(data, dict):
+            non_nullable_fields = {
+                "medicine_name": "medicine_name cannot be null.",
+                "unit": "unit cannot be null.",
+                "reorder_level": "reorder_level cannot be null.",
+                "is_active": "is_active cannot be null.",
+            }
+            for field, err_msg in non_nullable_fields.items():
+                if field in data and data[field] is None:
+                    raise ValueError(err_msg)
+        return data
+
     @field_validator("medicine_name", "unit", mode="before")
     @classmethod
     def validate_update_strings(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and isinstance(v, str):
+        if v is None:
+            raise ValueError("Field cannot be null.")
+        if isinstance(v, str):
             trimmed = v.strip()
             if not trimmed:
                 raise ValueError("Field cannot be empty or only whitespace.")

@@ -83,7 +83,7 @@ export const DemandForecastPage: React.FC = () => {
         <div className="text-xs text-amber-900">
           <p className="font-bold">Demonstration Demand Forecast Engine — Synthetic Preview</p>
           <p className="mt-0.5 leading-relaxed text-amber-800">
-            All forward consumption curves, upper/lower confidence bands, and the reported 4.8% MAPE are <strong>illustrative demonstration parameters</strong>. In Phase 1, no actual machine learning models (Prophet / LightGBM) have been trained or evaluated against dispensary history. Real validated predictions will activate upon connecting live PostgreSQL and FastAPI model endpoints in Phase 2.
+            All forward consumption curves, upper/lower confidence bands, and the reported 4.8% MAPE are <strong>illustrative demonstration parameters</strong>. In Phase 1, no actual machine learning models (Prophet / LightGBM) have been trained or evaluated against dispensary history. Real validated predictions will activate upon connecting live MySQL and FastAPI model endpoints in Phase 2.
           </p>
         </div>
       </div>

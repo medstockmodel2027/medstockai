@@ -54,7 +54,7 @@ MedStock AI is an intelligent inventory forecasting, stockout risk mitigation, a
 ### 8. Pharmacy Settings & State Export
 - Dispensary profile: Pharmacy Name, Branch, Drug License No. (DL-20B/21B), GSTIN, and Registered Pharmacist details.
 - Configurable risk thresholds: Low stock days-of-supply horizon and near-expiry warning windows (30/60/90 days).
-- **JSON State Exporter:** Export complete application state to JSON to facilitate migration to Phase 2 FastAPI + PostgreSQL endpoints.
+- **JSON State Exporter:** Export complete application state to JSON to facilitate migration to Phase 2 FastAPI + MySQL endpoints.
 - Demo data reset button to restore default demonstration state at any time.
 
 ---
@@ -113,12 +113,25 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 # MySQL Database Health Check: http://127.0.0.1:8000/api/health/db
 ```
 
+### 3. Running Backend Automated Tests
+```powershell
+powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m pytest backend/tests -v"
+```
+
+> **Testing & Database Isolation:**
+> - **Isolated SQLite In-Memory Database:** All 21 automated backend tests (`backend/tests/`) run using an in-memory SQLite database (`sqlite:///:memory:`) with SQLAlchemy `StaticPool`. This ensures tests run deterministically and fast without touching or mutating live databases.
+> - **Live MySQL Database Health Probe:** The `GET /api/health/db` endpoint probes the real configured local MySQL server (`127.0.0.1:3306`). If credentials are not yet configured in `backend/.env`, it safely returns status `degraded` without crashing.
+
+---
+
+## 🔒 Reliability & Hardening Protections
+- **Medicine PATCH Validation:** Rejects explicit `null` values on non-nullable fields (`medicine_name`, `unit`, `reorder_level`, `is_active`) with HTTP `422 Unprocessable Entity` while preserving legitimate partial updates. Allows setting optional fields (`brand_name`, `generic_name`, `category`) to `null`.
+- **Database-Level Duplicate Protection:** Enforces uniqueness across both MySQL and SQLite using a normalized `canonical_key` index (`<clean_name>||<clean_brand>`), reliably preventing duplicate inserts even for unbranded medicines (`brand_name` is NULL) without data deletion or overwrites.
+- **Safe Exception Handling:** API clients receive a generic `{"detail": "Internal server error. Please try again later."}` on unhandled 500 errors, while full diagnostic error logs sanitize and mask database passwords and connection URIs.
+
 ---
 
 ## 🔬 Demonstration & Phase Status
 - **Phase 1 (Frontend):** Type C Pharmacy Dashboard with interactive mock data engine, full inventory ledger tracking, and Recharts analytics.
 - **Phase 2, Step 1 (Backend Foundation - MySQL):** FastAPI service with SQLAlchemy 2.x and PyMySQL connection pooling, CORS allowlist for Vite frontend, Pydantic schemas, password-sanitized error handling, `GET /api/health` for API health, and `GET /api/health/db` for live local MySQL probe diagnostics.
-- **Phase 2, Step 2 (Medicine Master API):** Full CRUD REST API (`/api/medicines`) backed by SQLAlchemy `Medicine` model, Pydantic validation schemas, pagination, multi-field search, duplicate name/brand conflict prevention, and soft-deactivation.
-
-
-# medstockai
+- **Phase 2, Step 2 (Medicine Master API):** Full CRUD REST API (`/api/medicines`) backed by SQLAlchemy `Medicine` model, Pydantic validation schemas, pagination, multi-field search, duplicate name/brand conflict prevention, and soft-deactivation.

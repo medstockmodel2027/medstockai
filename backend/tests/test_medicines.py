@@ -289,3 +289,135 @@ def test_records_persist_across_sessions():
     assert fetched.medicine_name == "Montelukast 10mg"
     assert fetched.brand_name == "Montair 10"
     session2.close()
+
+
+def test_patch_rejects_explicit_null_on_non_nullable_fields(client):
+    """
+    Test that PATCH requests with explicit null for non-nullable columns
+    (medicine_name, unit, reorder_level, is_active) return a 422 Unprocessable Entity
+    instead of causing a database integrity error.
+    """
+    created = client.post(
+        "/api/medicines",
+        json={"medicine_name": "Cefixime 200mg", "brand_name": "Taxim-O", "unit": "strip", "reorder_level": 20},
+    ).json()
+    med_id = created["id"]
+
+    # 1. Explicit null for medicine_name -> 422
+    res_null_name = client.patch(f"/api/medicines/{med_id}", json={"medicine_name": None})
+    assert res_null_name.status_code == 422
+    assert "medicine_name cannot be null" in str(res_null_name.json())
+
+    # 2. Explicit null for unit -> 422
+    res_null_unit = client.patch(f"/api/medicines/{med_id}", json={"unit": None})
+    assert res_null_unit.status_code == 422
+    assert "unit cannot be null" in str(res_null_unit.json())
+
+    # 3. Explicit null for reorder_level -> 422
+    res_null_reorder = client.patch(f"/api/medicines/{med_id}", json={"reorder_level": None})
+    assert res_null_reorder.status_code == 422
+    assert "reorder_level cannot be null" in str(res_null_reorder.json())
+
+    # 4. Explicit null for is_active -> 422
+    res_null_active = client.patch(f"/api/medicines/{med_id}", json={"is_active": None})
+    assert res_null_active.status_code == 422
+    assert "is_active cannot be null" in str(res_null_active.json())
+
+    # 5. Confirm record was not corrupted
+    get_res = client.get(f"/api/medicines/{med_id}")
+    assert get_res.status_code == 200
+    assert get_res.json()["medicine_name"] == "Cefixime 200mg"
+    assert get_res.json()["unit"] == "strip"
+    assert get_res.json()["reorder_level"] == 20
+
+
+def test_patch_allows_null_for_optional_fields_and_preserves_partials(client):
+    """
+    Test that PATCH allows setting optional fields (brand_name, generic_name, category) to null,
+    while preserving non-nullable fields when omitted.
+    """
+    created = client.post(
+        "/api/medicines",
+        json={
+            "medicine_name": "Levocetirizine 5mg",
+            "brand_name": "Vozet",
+            "generic_name": "Levocetirizine Dihydrochloride",
+            "category": "Antiallergic",
+            "unit": "strip",
+            "reorder_level": 15,
+        },
+    ).json()
+    med_id = created["id"]
+
+    # 1. Nullify optional brand_name and category
+    patch_res = client.patch(
+        f"/api/medicines/{med_id}",
+        json={"brand_name": None, "category": None},
+    )
+    assert patch_res.status_code == 200
+    updated = patch_res.json()
+    assert updated["brand_name"] is None
+    assert updated["category"] is None
+    # Verify omitted non-nullable fields are preserved
+    assert updated["medicine_name"] == "Levocetirizine 5mg"
+    assert updated["generic_name"] == "Levocetirizine Dihydrochloride"
+    assert updated["unit"] == "strip"
+    assert updated["reorder_level"] == 15
+
+
+def test_duplicate_protection_unbranded_medicines(client):
+    """
+    Test duplicate protection for medicines without a brand name (brand_name is null).
+    Both exact matches and case-insensitive duplicates must be rejected with 409 Conflict.
+    """
+    payload = {
+        "medicine_name": "Normal Saline 0.9% 500ml",
+        "unit": "bottle",
+        "reorder_level": 30,
+    }
+    res1 = client.post("/api/medicines", json=payload)
+    assert res1.status_code == 201
+    assert res1.json()["brand_name"] is None
+
+    # Duplicate without brand -> 409 Conflict
+    res_dup = client.post("/api/medicines", json=payload)
+    assert res_dup.status_code == 409
+    assert "already exists in catalog" in res_dup.json()["detail"]
+
+    # Case-insensitive duplicate without brand -> 409 Conflict
+    payload_upper = {
+        "medicine_name": "NORMAL SALINE 0.9% 500ML",
+        "unit": "bottle",
+    }
+    res_upper = client.post("/api/medicines", json=payload_upper)
+    assert res_upper.status_code == 409
+
+
+def test_database_level_unique_constraint(db_session):
+    """
+    Verify database-level protection against concurrent duplicate inserts.
+    Directly inserting two records with the same canonical_key must trigger an IntegrityError.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    med1 = Medicine(
+        medicine_name="Diclofenac 50mg",
+        brand_name=None,
+        unit="tablet",
+    )
+    db_session.add(med1)
+    db_session.commit()
+
+    # Second direct insert bypassing API logic
+    med2 = Medicine(
+        medicine_name="DICLOFENAC 50MG",
+        brand_name=None,
+        unit="tablet",
+    )
+    db_session.add(med2)
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+    db_session.rollback()
+

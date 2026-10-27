@@ -58,7 +58,7 @@ export const SettingsPage: React.FC = () => {
     downloadAnchor.click()
     downloadAnchor.remove()
 
-    addToast('State Exported', 'Downloaded complete pharmacy state as JSON for FastAPI / PostgreSQL migration.', 'info')
+    addToast('State Exported', 'Downloaded complete pharmacy state as JSON for FastAPI / MySQL migration.', 'info')
   }
 
   return (
