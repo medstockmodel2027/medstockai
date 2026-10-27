@@ -106,11 +106,42 @@ def check_db_connection() -> Tuple[bool, str, Optional[str]]:
         )
 
 
+def run_migrations(connection=None, alembic_ini_path: Optional[str] = None) -> bool:
+    """
+    Run Alembic migrations programmatically to apply schema evolution up to 'head'.
+    Ensures safe upgrades for existing and fresh databases.
+    """
+    from pathlib import Path
+    try:
+        from alembic.config import Config
+        from alembic import command
+
+        if alembic_ini_path is None:
+            alembic_ini_path = str(Path(__file__).resolve().parent.parent.parent / "alembic.ini")
+
+        alembic_cfg = Config(alembic_ini_path)
+        if connection is not None:
+            alembic_cfg.attributes["connection"] = connection
+            command.upgrade(alembic_cfg, "head")
+        elif engine is not None:
+            with engine.connect() as conn:
+                alembic_cfg.attributes["connection"] = conn
+                command.upgrade(alembic_cfg, "head")
+        else:
+            return False
+
+        logger.info("Alembic schema migrations executed successfully up to head.")
+        return True
+    except Exception as exc:
+        logger.warning("Alembic migration execution note: %s", sanitize_error(str(exc)))
+        return False
+
+
 def init_db(engine_instance=None) -> bool:
     """
-    Safely initialize registered database tables if they do not exist.
-    Uses SQLAlchemy's Base.metadata.create_all(), which performs idempotent
-    CREATE TABLE IF NOT EXISTS without resetting, dropping, or overwriting existing data.
+    Safely initialize or upgrade registered database tables.
+    Attempts Alembic migrations first; falls back to idempotent Base.metadata.create_all().
+    Never drops or resets existing tables or data.
     """
     eng = engine_instance or engine
     if eng is None:
@@ -120,9 +151,21 @@ def init_db(engine_instance=None) -> bool:
     try:
         # Import models so they are registered with Base.metadata
         import app.models  # noqa: F401
-        Base.metadata.create_all(bind=eng)
-        logger.info("Database schema initialized safely (idempotent create_all).")
+
+        # Attempt Alembic migration path
+        migrated = False
+        try:
+            with eng.connect() as conn:
+                migrated = run_migrations(connection=conn)
+        except Exception as mig_exc:
+            logger.warning("Alembic upgrade bypass: %s", sanitize_error(str(mig_exc)))
+
+        if not migrated:
+            Base.metadata.create_all(bind=eng)
+            logger.info("Database schema verified via Base.metadata.create_all().")
+
         return True
     except Exception as exc:
         logger.error("Failed to initialize database tables: %s", sanitize_error(str(exc)))
         return False
+

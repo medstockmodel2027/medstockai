@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -10,8 +10,11 @@ from sqlalchemy import (
     event,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.batch import Batch
 
 
 class Medicine(Base):
@@ -56,6 +59,9 @@ class Medicine(Base):
         unique=True,
         index=True,
     )
+
+    # Relationships
+    batches: Mapped[List["Batch"]] = relationship("Batch", back_populates="medicine")
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

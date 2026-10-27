@@ -241,23 +241,75 @@ The Medicine Master provides catalog management for drug formulations. Calculate
 - `skip` *(integer, default 0)*: Number of records to skip.
 - `limit` *(integer, default 20, max 100)*: Page size limit.
 
-### Safe Schema Initialization
-Tables are created safely via `init_db()` using SQLAlchemy's idempotent `Base.metadata.create_all()`. This executes `CREATE TABLE IF NOT EXISTS` and will **never reset, drop, or overwrite** existing tables or data. In a future production phase, formal schema migrations will be handled via Alembic.
+## 📦 Batch & Expiry Management REST API (`/api/batches`)
+
+The Batch Management API enables tracking of individual drug shipments, manufacturer batch numbers, unit pricing (Numeric purchase price and MRP), and real-time calculated shelf-life analytics.
+
+| Method | Endpoint | Description | Status Code |
+|---|---|---|---|
+| `POST` | `/api/batches` | Register a new batch (initializes `current_stock` from `quantity_received`) | `201 Created` / `404 Not Found` / `409 Conflict` / `422 Unprocessable` |
+| `GET` | `/api/batches` | List batches sorted FEFO (earliest expiry first) with pagination and filters | `200 OK` |
+| `GET` | `/api/batches/{id}` | Retrieve detailed batch metrics and calculated shelf-life status | `200 OK` / `404 Not Found` |
+| `PATCH` | `/api/batches/{id}` | Partially update permitted metadata (pricing, rack, supplier, dates) | `200 OK` / `404 Not Found` / `422 Unprocessable` |
+
+### Query Parameters for `GET /api/batches`:
+- `skip` *(integer, default 0)*: Pagination offset.
+- `limit` *(integer, default 20, max 100)*: Maximum batches to return.
+- `medicine_id` *(integer, optional)*: Filter batches by specific medicine catalog ID.
+- `search` *(string, optional)*: Case-insensitive search across `batch_number`, `medicine_name`, or `brand_name`.
+- `expired` *(boolean, optional)*: `true` returns only expired batches; `false` returns only non-expired active batches.
+- `expiring_days` *(integer, optional)*: Filters batches expiring within `N` days from today (near-expiry horizon).
+
+### Shelf-Life Analytics & Computed Attributes:
+- `days_until_expiry`: Exact days remaining computed dynamically against reference date (`(expiry_date - date.today()).days`).
+- `is_expired`: Boolean flag indicating if expiry date is in the past.
+- `expiry_status`: Operational category:
+  - `"expired"`: Past expiration date (`< 0` days).
+  - `"near_expiry"`: Expiring within 90 days (`0 to 90` days).
+  - `"normal"`: Standard shelf life (`> 90` days).
+
+### Financial Precision & Immutability Rules:
+- **Numeric Precision:** `purchase_price` and `mrp` use SQLAlchemy `Numeric(10, 2)` to eliminate IEEE 754 floating-point inaccuracies.
+- **Stock Immutability:** `current_stock` and `quantity_received` cannot be modified via metadata PATCH. Stock adjustments will be managed strictly through the ledger transaction system.
+- **Duplicate Protection:** Duplicate batch numbers for the same medicine are rejected via application check and database-level `canonical_batch_key` unique index (`f"{medicine_id}||{clean_batch_number}"`).
+
+---
+
+## 🗄️ Database Schema Evolution & Alembic Migrations
+
+MedStock AI uses **Alembic** to manage database schema evolution safely across development and production environments.
+
+### Migration Revisions:
+1. `0001_create_medicines`: Initial schema establishing the `medicines` catalog table.
+2. `0002_add_canonical_key`: Upgrades existing databases to add `canonical_key VARCHAR(512)`:
+   - **Duplicate Safety Check:** Prior to schema alteration, inspects table for colliding rows. If pre-existing duplicate medicines are detected, the migration **aborts safely with a detailed `RuntimeError`** without deleting, modifying, or losing any records.
+   - **Backfill:** Automatically computes and populates `f"{lower(name)}||{lower(brand)}"` for existing rows, then alters the column to `NOT NULL` with a `UNIQUE` index.
+3. `0003_create_batches`: Creates the `batches` table with foreign-key constraint to `medicines.id`, check constraints, and unique compound index `canonical_batch_key`.
+
+### Running Migrations:
+```powershell
+# From backend/ directory with activated virtual environment:
+alembic upgrade head
+
+# From project root:
+powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m alembic upgrade head"
+```
+
+Automatic startup initialization via `init_db()` executes Alembic migrations programmatically to ensure both fresh setups and existing development instances are safely up-to-date.
 
 ---
 
 ## 🔒 Reliability & Hardening Protections
 
-### 1. Robust Medicine PATCH Validation
-- **Non-nullable Field Protection:** Explicit `null` values for `medicine_name`, `unit`, `reorder_level`, or `is_active` are rejected with HTTP `422 Unprocessable Entity` before reaching the database.
+### 1. Robust Medicine & Batch PATCH Validation
+- **Non-nullable Field Protection:** Explicit `null` values for `medicine_name`, `unit`, `reorder_level`, `is_active`, `expiry_date`, `purchase_price`, or `mrp` are rejected with HTTP `422 Unprocessable Entity` before reaching the database.
 - **Partial Update Flexibility:** Fields omitted from the PATCH payload are untouched (partial updates).
-- **Clearing Optional Fields:** Explicit `null` values are permitted for optional fields (`brand_name`, `generic_name`, `category`) allowing users to deliberately clear these fields.
+- **Clearing Optional Fields:** Explicit `null` values are permitted for optional fields (`brand_name`, `generic_name`, `category`, `supplier_name`, `storage_location`) allowing users to deliberately clear these fields.
 
 ### 2. Database-Level Duplicate Protection
 - Uniqueness is validated at two tiers:
   1. **Application Query Level:** Case-insensitive check before write.
-  2. **Database Engine Level:** A normalized `canonical_key` column (`String(512)`, indexed and unique) is populated via SQLAlchemy `@event.listens_for(Medicine, "before_insert")` and `"before_update"` hooks using `f"{clean_name}||{clean_brand}"`.
-- **Unbranded Medicine Protection:** In standard SQL and MySQL, standard compound unique constraints on nullable columns (`UNIQUE(medicine_name, brand_name)`) do not prevent duplicates when `brand_name IS NULL` (because `NULL != NULL`). The canonical key pattern enforces strict uniqueness across both MySQL and SQLite for both branded and unbranded medicines, guarding against concurrent duplicate inserts without silently deleting or rewriting records. Duplicate attempts trigger clean `409 Conflict` responses.
+  2. **Database Engine Level:** A normalized `canonical_key` on medicines and `canonical_batch_key` on batches enforced via unique indexes.
 
 ### 3. Safe Exception Handling & Credential Masking
 - **Client Safety:** Unhandled exceptions caught by the global error handler return a generic message `{"detail": "Internal server error. Please try again later."}` with status 500. Raw tracebacks, internal database schemas, and credentials are never exposed to clients.
@@ -267,7 +319,7 @@ Tables are created safely via `init_db()` using SQLAlchemy's idempotent `Base.me
 
 ## 🧪 Running Automated Tests
 
-Run the full pytest suite (health, exception handling, and medicine master):
+Run the full pytest suite (health, medicines, batches, and migrations):
 ```powershell
 # From project root:
 powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m pytest backend/tests -v"
@@ -280,26 +332,28 @@ pytest tests -v
 - **Isolated SQLite In-Memory Database:** All unit and integration tests (`backend/tests/`) run using an isolated in-memory SQLite database (`sqlite:///:memory:`) configured with SQLAlchemy's `StaticPool`. This guarantees tests run deterministically and safely without mutating or requiring access to live database instances.
 - **Live Database Health Probe:** The `GET /api/health/db` endpoint specifically probes the live configured **MySQL database** (`127.0.0.1:3306`). If the local MySQL server is unavailable or credentials are unconfigured, it returns HTTP 200 with `status: "degraded"` and diagnostic details without throwing unhandled exceptions.
 
-All **21 automated tests** pass cleanly:
-1. `test_root_endpoint`: Verifies API welcome metadata, MySQL dialect, and documentation URLs.
-2. `test_api_health_endpoint`: Confirms `GET /api/health` returns status `ok`.
-3. `test_database_health_endpoint`: Validates `GET /api/health/db` probe schema and sanitized diagnostics.
-4. `test_root_health_aliases`: Ensures root `/health` and `/health/db` mirror the `/api` routes.
-5. `test_cors_preflight_and_headers`: Tests allowlist for `http://localhost:5173`.
-6. `test_cors_rejected_for_disallowed_origin`: Verifies rejection of untrusted origins.
-7. `test_database_error_sanitization`: Verifies regex masking of MySQL passwords in error messages.
-8. `test_masked_database_uri`: Confirms `masked_database_uri` obscures passwords in connection strings.
-9. `test_global_exception_handler_returns_generic_error`: Confirms unhandled exceptions return generic 500 without leaking secrets.
-10. `test_create_valid_medicine`: Confirms creating a medicine with full attributes.
-11. `test_reject_invalid_or_missing_required_fields`: Tests 422 errors on missing name, whitespace-only name, and negative reorder level.
-12. `test_handle_duplicate_records`: Validates 409 Conflict on exact name + brand duplicates, while allowing different brands of the same generic salt.
-13. `test_list_and_search_medicines`: Validates pagination, multi-field search, and category filtering.
-14. `test_get_medicine_by_id`: Validates retrieval by primary key and 404 on missing record.
-15. `test_update_medicine`: Validates partial updates (PATCH) and conflict rejection.
-16. `test_deactivate_medicine`: Validates soft-deactivation (DELETE) setting `is_active=False` while preserving historical records.
-17. `test_records_persist_across_sessions`: Confirms records persist across separate database sessions.
-18. `test_patch_rejects_explicit_null_on_non_nullable_fields`: Verifies PATCH with explicit `null` on `medicine_name`, `unit`, `reorder_level`, and `is_active` returns 422.
-19. `test_patch_allows_null_for_optional_fields_and_preserves_partials`: Verifies PATCH allows setting optional fields to `null` and preserves unaffected fields.
-20. `test_duplicate_protection_unbranded_medicines`: Verifies duplicate rejection for unbranded medicines (`brand_name` is null/empty).
-21. `test_database_level_unique_constraint`: Confirms canonical key unique constraint enforces uniqueness at database layer.
+All **39 automated tests** pass cleanly:
+- **Batch API (15 tests):**
+  1. `test_create_batch_success`: Full creation, unit economics, and stock initialization.
+  2. `test_create_batch_missing_medicine_reference`: 404 when referencing missing medicine.
+  3. `test_create_batch_duplicate_case_insensitive`: 409 duplicate rejection for same medicine; permits on different medicine.
+  4. `test_create_batch_validation_negative_quantity_and_pricing`: 422 on negative quantities or prices.
+  5. `test_create_batch_invalid_date_ordering`: 422 when expiry precedes manufacturing date.
+  6. `test_get_batch_by_id`: 200 retrieval and 404 on nonexistent batch.
+  7. `test_expiry_status_calculations_and_date_boundaries`: Boundary tests for -1, 0, 1, 90, 91 days.
+  8. `test_list_batches_fefo_sorting_and_pagination`: FEFO earliest-expiry sorting and offset/limit pagination.
+  9. `test_list_batches_filtering_by_medicine_search_and_expiry`: Filters by medicine, search term, expired boolean, and 30-day horizon.
+  10. `test_patch_batch_metadata_preserves_stock_and_partials`: Updates metadata while keeping stock intact.
+  11. `test_patch_batch_forbids_arbitrary_stock_tampering`: 422 rejection when attempting to patch quantity or stock.
+  12. `test_patch_batch_rejects_explicit_null_on_non_nullable_fields`: 422 on null expiry or pricing; allows null on optional fields.
+  13. `test_patch_batch_invalid_date_ordering`: 422 when updating expiry to precede manufacturing date.
+  14. `test_patch_nonexistent_batch_returns_404`: 404 when patching missing ID.
+  15. `test_database_level_canonical_batch_key_uniqueness`: Direct SQLAlchemy duplicate insertion triggers `IntegrityError`.
+- **Alembic Migrations (3 tests):**
+  16. `test_alembic_clean_upgrade_to_head`: Fresh database upgrades through 0001, 0002, and 0003.
+  17. `test_alembic_upgrade_existing_database_with_backfill`: Existing DB with pre-existing rows backfills `canonical_key` safely without data loss.
+  18. `test_alembic_migration_aborts_on_preexisting_duplicates`: Safe abort on duplicate existing records with zero data deletion.
+- **Medicine Master & System Health (21 tests):**
+  19-39. Complete coverage of root, health, database probes, credential masking, CORS allowlisting, and medicine CRUD endpoints.
+
 

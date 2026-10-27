@@ -111,22 +111,29 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 # Interactive Swagger Docs: http://127.0.0.1:8000/docs
 # API Health Check: http://127.0.0.1:8000/api/health
 # MySQL Database Health Check: http://127.0.0.1:8000/api/health/db
+# Batch API: http://127.0.0.1:8000/api/batches
 ```
 
-### 3. Running Backend Automated Tests
+### 3. Running Database Migrations (Alembic)
+```powershell
+powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m alembic upgrade head"
+```
+
+### 4. Running Backend Automated Tests
 ```powershell
 powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.exe -m pytest backend/tests -v"
 ```
 
 > **Testing & Database Isolation:**
-> - **Isolated SQLite In-Memory Database:** All 21 automated backend tests (`backend/tests/`) run using an in-memory SQLite database (`sqlite:///:memory:`) with SQLAlchemy `StaticPool`. This ensures tests run deterministically and fast without touching or mutating live databases.
+> - **Isolated SQLite In-Memory Database:** All 39 automated backend tests (`backend/tests/`) run using an in-memory SQLite database (`sqlite:///:memory:`) with SQLAlchemy `StaticPool`. This ensures tests run deterministically and fast without touching or mutating live databases.
 > - **Live MySQL Database Health Probe:** The `GET /api/health/db` endpoint probes the real configured local MySQL server (`127.0.0.1:3306`). If credentials are not yet configured in `backend/.env`, it safely returns status `degraded` without crashing.
 
 ---
 
 ## 🔒 Reliability & Hardening Protections
-- **Medicine PATCH Validation:** Rejects explicit `null` values on non-nullable fields (`medicine_name`, `unit`, `reorder_level`, `is_active`) with HTTP `422 Unprocessable Entity` while preserving legitimate partial updates. Allows setting optional fields (`brand_name`, `generic_name`, `category`) to `null`.
-- **Database-Level Duplicate Protection:** Enforces uniqueness across both MySQL and SQLite using a normalized `canonical_key` index (`<clean_name>||<clean_brand>`), reliably preventing duplicate inserts even for unbranded medicines (`brand_name` is NULL) without data deletion or overwrites.
+- **Medicine & Batch PATCH Validation:** Rejects explicit `null` values on non-nullable fields (`medicine_name`, `unit`, `reorder_level`, `is_active`, `expiry_date`, `purchase_price`, `mrp`) with HTTP `422 Unprocessable Entity` while preserving legitimate partial updates. Allows setting optional fields (`brand_name`, `generic_name`, `category`, `supplier_name`, `storage_location`) to `null`.
+- **Database-Level Duplicate Protection:** Enforces uniqueness across both MySQL and SQLite using normalized `canonical_key` (`<clean_name>||<clean_brand>`) and `canonical_batch_key` (`<medicine_id>||<clean_batch>`) indexes, preventing duplicate inserts without data deletion or overwrites.
+- **Stock Immutability:** Batch `current_stock` and `quantity_received` are protected against arbitrary changes via PATCH; movements are reserved for the inventory transaction ledger.
 - **Safe Exception Handling:** API clients receive a generic `{"detail": "Internal server error. Please try again later."}` on unhandled 500 errors, while full diagnostic error logs sanitize and mask database passwords and connection URIs.
 
 ---
@@ -134,4 +141,6 @@ powershell -Command "`$env:PYTHONPATH='backend'; .\backend\venv\Scripts\python.e
 ## 🔬 Demonstration & Phase Status
 - **Phase 1 (Frontend):** Type C Pharmacy Dashboard with interactive mock data engine, full inventory ledger tracking, and Recharts analytics.
 - **Phase 2, Step 1 (Backend Foundation - MySQL):** FastAPI service with SQLAlchemy 2.x and PyMySQL connection pooling, CORS allowlist for Vite frontend, Pydantic schemas, password-sanitized error handling, `GET /api/health` for API health, and `GET /api/health/db` for live local MySQL probe diagnostics.
-- **Phase 2, Step 2 (Medicine Master API):** Full CRUD REST API (`/api/medicines`) backed by SQLAlchemy `Medicine` model, Pydantic validation schemas, pagination, multi-field search, duplicate name/brand conflict prevention, and soft-deactivation.
+- **Phase 2, Step 2 (Medicine Master API):** Full CRUD REST API (`/api/medicines`) backed by SQLAlchemy `Medicine` model, Pydantic validation schemas, pagination, multi-field search, duplicate name/brand conflict prevention, and soft-deactivation.
+- **Phase 2, Step 3 (Batch & Expiry Management API):** Full REST API (`/api/batches`) for stock shipment registration, FEFO sorted listing, dynamic shelf-life analytics (`days_until_expiry`, `is_expired`, `expiry_status`), stock protection, and Alembic database migration revisions (0001, 0002, 0003).
+
